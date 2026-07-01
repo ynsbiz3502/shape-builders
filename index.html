@@ -109,6 +109,13 @@
   .sparkle{ position:absolute; z-index:12; pointer-events:none; }
   .confetti{ position:absolute; z-index:33; width:14px; height:20px; border-radius:3px; pointer-events:none; }
 
+  /* the "come to life" video (Gemini/Veo clip) — falls back to the CSS animation if no clip is present */
+  #showVideo{ position:absolute; z-index:20; left:50%; top:47%; transform:translate(-50%,-50%) scale(.88);
+    width:min(82vw,560px); max-height:64vh; border-radius:28px; object-fit:contain; background:#0b0b16;
+    border:7px solid #fff; box-shadow:0 18px 44px rgba(0,0,0,.32); opacity:0; pointer-events:none;
+    transition:opacity .45s ease, transform .45s cubic-bezier(.2,1.2,.4,1); }
+  #showVideo.show{ opacity:1; transform:translate(-50%,-50%) scale(1); }
+
   /* overlays */
   .overlay{ position:absolute; inset:0; z-index:50; display:flex; flex-direction:column; align-items:center;
     justify-content:center; text-align:center; gap:20px; padding:24px;
@@ -146,6 +153,7 @@
     <div id="dots"></div>
   </div>
 
+  <video id="showVideo" playsinline webkit-playsinline preload="auto"></video>
   <div id="praise"></div>
   <div id="banner"></div>
 
@@ -170,7 +178,8 @@
   const el={ stars:document.getElementById('stars'), toys:document.getElementById('toys'),
     prompt:document.getElementById('prompt'), dots:document.getElementById('dots'),
     praise:document.getElementById('praise'), banner:document.getElementById('banner'),
-    startScreen:document.getElementById('startScreen'), soundBtn:document.getElementById('soundBtn') };
+    startScreen:document.getElementById('startScreen'), soundBtn:document.getElementById('soundBtn'),
+    showVideo:document.getElementById('showVideo') };
 
   // ---------- puzzles ----------
   // Each toy is built from chunky shapes placed in a design box [w,h].
@@ -262,6 +271,8 @@
   // ---------- state ----------
   let stars=0, toys=0, idx=0, muted=false, transitioning=false, started=false;
   let pieces=[], trayOrder=[], scale=1, placedCount=0, drag=null;
+  let clipReady=false; // whether a Gemini/Veo clip is available for the current toy
+  const slugFor=name=>name.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'');
 
   // ---------- audio ----------
   let AC=null;
@@ -331,6 +342,19 @@
     el.prompt.textContent='Build the '+def.name+'!';
     positionAll();
     say('Build the '+def.name+'!');
+    preloadClip(def);
+  }
+
+  // Try to load this toy's Gemini/Veo clip (videos/<slug>.mp4). If it isn't there
+  // (404 / decode error), clipReady stays false and we use the CSS come-to-life animation.
+  function preloadClip(def){
+    clipReady=false;
+    const v=el.showVideo;
+    v.classList.remove('show'); try{ v.pause(); }catch(e){}
+    v.onloadeddata=()=>{ clipReady=true; };
+    v.onerror=()=>{ clipReady=false; };
+    v.src='videos/'+slugFor(def.name)+'.mp4';
+    try{ v.load(); }catch(e){}
   }
 
   function positionAll(){
@@ -465,21 +489,46 @@
   // ---------- completion / come to life ----------
   function completePuzzle(){
     const def=PUZZLES[idx];
-    // face
+    // shared reward juice
+    toys+=1; el.toys.textContent=toys; stars+=5; el.stars.textContent=stars;
+    showText(el.banner,'You built the '+def.name+'! 🎉');
+    say('You built the '+def.name+'! '+pick(PRAISE));
+    cheer();
+    for(let i=0;i<36;i++) setTimeout(()=>confetti(rand(0,W()),-20,3), i*35);
+    // Play the Gemini/Veo clip if we have one; otherwise the built-in animation.
+    if(clipReady) playShowVideo(def); else comeToLifeAnimation(def);
+  }
+
+  function nextPuzzle(){ idx=(idx+1)%PUZZLES.length; buildPuzzle(idx); }
+
+  // Gemini/Veo clip of the finished toy coming to life
+  function playShowVideo(def){
+    const v=el.showVideo;
+    stage.style.transition='opacity .45s ease'; stage.style.opacity='0'; // dissolve the shapes into the video
+    try{ v.currentTime=0; }catch(e){}
+    v.classList.add('show');
+    v.muted = muted;                       // respect the sound toggle
+    const p=v.play();
+    if(p&&p.catch) p.catch(()=>{ v.muted=true; v.play().catch(()=>{}); }); // fall back to muted if autoplay blocked
+    let done=false;
+    const finish=()=>{ if(done) return; done=true; clearTimeout(safety); v.onended=null;
+      v.classList.remove('show'); try{ v.pause(); }catch(e){}
+      stage.style.opacity=''; stage.style.transition='';
+      nextPuzzle();
+    };
+    v.onended=finish;
+    const safety=setTimeout(finish, 15000);  // in case 'ended' never fires
+  }
+
+  // Built-in CSS come-to-life show (fallback when there's no clip)
+  function comeToLifeAnimation(def){
     const face=document.createElement('div'); face.className='face';
     face.style.left=(def.face[0]*scale)+'px'; face.style.top=(def.face[1]*scale)+'px';
     face.innerHTML='<div class="eyes"><div class="eye"><i></i></div><div class="eye"><i></i></div></div><div class="smile"></div>';
     stage.appendChild(face); void face.offsetWidth; face.classList.add('show');
-
-    stage.classList.add('alive');
-    aliveSound(); cheer();
-    for(let i=0;i<36;i++) setTimeout(()=>confetti(rand(0,W()),-20,3), i*35);
-    toys+=1; el.toys.textContent=toys; stars+=5; el.stars.textContent=stars;
-    showText(el.banner,'You built the '+def.name+'! 🎉');
-    say('You built the '+def.name+'! '+pick(PRAISE));
-
+    stage.classList.add('alive'); aliveSound();
     setTimeout(()=>{ stage.classList.remove('alive'); stage.classList.add('exit'); }, 1950);
-    setTimeout(()=>{ idx=(idx+1)%PUZZLES.length; buildPuzzle(idx); }, 3000);
+    setTimeout(nextPuzzle, 3000);
   }
 
   // ---------- decoration ----------
