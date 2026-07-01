@@ -63,6 +63,14 @@
   .slot.glow{ filter:drop-shadow(0 0 10px rgba(255,190,60,.95)); animation:slotpulse .8s ease-in-out infinite; }
   .slot.ready{ filter:drop-shadow(0 0 16px rgba(120,230,120,1)); }
   @keyframes slotpulse{ 0%,100%{ opacity:.85 } 50%{ opacity:1 } }
+  .slot.hint{ filter:drop-shadow(0 0 18px rgba(255,160,30,1)); animation:hintpulse .65s ease-in-out infinite; }
+  @keyframes hintpulse{ 0%,100%{ transform:scale(1); opacity:.85 } 50%{ transform:scale(1.12); opacity:1 } }
+  .piece.wiggle{ animation:pwig .5s ease-in-out infinite; }
+  @keyframes pwig{ 0%,100%{ transform:rotate(-6deg) } 50%{ transform:rotate(6deg) } }
+  .hintHand{ position:absolute; z-index:16; font-size:32px; pointer-events:none; transform:translate(-50%,-100%);
+    filter:drop-shadow(0 3px 2px rgba(0,0,0,.25)); animation:handbob .6s ease-in-out infinite; }
+  @keyframes handbob{ 0%,100%{ transform:translate(-50%,-100%) } 50%{ transform:translate(-50%,-64%) } }
+  .egg{ position:absolute; z-index:32; pointer-events:none; filter:drop-shadow(0 4px 4px rgba(0,0,0,.22)); will-change:transform; }
 
   .piece{ position:absolute; z-index:6; cursor:grab; touch-action:none;
     filter:drop-shadow(0 5px 4px rgba(0,0,0,.18)); transition:filter .12s; }
@@ -262,17 +270,24 @@
   }
   function svgFor(pc,filled){
     const w=pc.w, h=pc.h;
+    // Silhouettes are tinted with the piece's OWN color (faint fill + bold dashed outline),
+    // so every empty slot obviously shows both the shape AND the color that belongs there.
     const opt = filled
       ? { fill:pc.color, r:pc.r }
-      : { fill:'rgba(90,100,140,.14)', stroke:'rgba(90,100,140,.55)', sw:3, dash:'8 7', r:pc.r };
+      : { fill:pc.color+'33', stroke:pc.color+'e0', sw:4.5, dash:'9 7', r:pc.r };
     return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">${shapeInner(pc.shape,w,h,opt)}</svg>`;
   }
 
   // ---------- state ----------
   let stars=0, toys=0, idx=0, muted=false, transitioning=false, started=false;
-  let pieces=[], trayOrder=[], scale=1, placedCount=0, drag=null;
+  let pieces=[], slots=[], trayOrder=[], scale=1, placedCount=0, drag=null;
   let clipReady=false; // whether a Gemini/Veo clip is available for the current toy
   const slugFor=name=>name.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'');
+  // idle → hint (5s) and easter-egg (15s) system
+  let lastActivity=0, idleIvl=null, hintBucket=0, eggBucket=0, lastEgg=-1;
+  const now=()=>Date.now();
+  function activity(){ lastActivity=now(); hintBucket=0; eggBucket=0; clearHint(); }
+  const sigMatch=(p,s)=>p.shape===s.shape && p.w===s.w && p.h===s.h && p.color===s.color;
 
   // ---------- audio ----------
   let AC=null;
@@ -320,16 +335,20 @@
     pieces.forEach(p=>{ if(p.el&&p.el.parentNode) p.el.remove(); });
 
     const def=PUZZLES[i];
-    pieces = def.pieces.map((pc,k)=>{
-      const d={ ...pc, placed:false, idx:k };
-      // slot
+    // slots (empty target outlines) — a piece may snap into ANY empty slot that matches
+    // its shape+size+color, so duplicate pieces (wheels, petals) are never fussy.
+    slots = def.pieces.map((pc,k)=>{
       const slot=document.createElement('div'); slot.className='slot'; slot.dataset.idx=k;
       slot.innerHTML=svgFor(pc,false);
-      stage.appendChild(slot); d.slot=slot;
-      // piece
+      slot.style.zIndex=Math.max(1, Math.round(20000 - pc.w*pc.h)); // smaller slots draw on top
+      stage.appendChild(slot);
+      return { ...pc, el:slot, idx:k, filled:false };
+    });
+    pieces = def.pieces.map((pc,k)=>{
       const pel=document.createElement('div'); pel.className='piece'; pel.dataset.idx=k;
       pel.innerHTML=svgFor(pc,true);
-      game.appendChild(pel); d.el=pel;
+      game.appendChild(pel);
+      const d={ ...pc, el:pel, placed:false, idx:k, slotRef:null };
       attachDrag(d);
       return d;
     });
@@ -343,6 +362,7 @@
     positionAll();
     say('Build the '+def.name+'!');
     preloadClip(def);
+    clearEggs(); activity();
   }
 
   // Try to load this toy's Gemini/Veo clip (videos/<slug>.mp4). If it isn't there
@@ -375,12 +395,15 @@
     const stageLeft=(W()-stageW)/2, stageTop=stageTopArea+(areaH-stageH)/2;
     stage.style.left=stageLeft+'px'; stage.style.top=stageTop+'px'; stage.style.width=stageW+'px'; stage.style.height=stageH+'px';
 
+    slots.forEach(s=>{
+      s.W=s.w*scale; s.H=s.h*scale;
+      s.el.style.left=((s.cx-s.w/2)*scale)+'px'; s.el.style.top=((s.cy-s.h/2)*scale)+'px';
+      s.el.style.width=s.W+'px'; s.el.style.height=s.H+'px';
+      s.targetCX=stageLeft+s.cx*scale; s.targetCY=stageTop+s.cy*scale;
+    });
     pieces.forEach(p=>{
       p.W=p.w*scale; p.H=p.h*scale;
-      p.slot.style.left=((p.cx-p.w/2)*scale)+'px'; p.slot.style.top=((p.cy-p.h/2)*scale)+'px';
-      p.slot.style.width=p.W+'px'; p.slot.style.height=p.H+'px';
-      p.targetCX=stageLeft+p.cx*scale; p.targetCY=stageTop+p.cy*scale;
-      p.snapR=Math.max(60, 0.55*Math.max(p.W,p.H));
+      p.snapR=Math.max(60, 0.6*Math.max(p.W,p.H));
       p.el.style.width=p.W+'px'; p.el.style.height=p.H+'px';
     });
     // tray homes (shuffled) — spaced by each piece's real width so nothing overlaps
@@ -392,24 +415,34 @@
 
     // apply positions per placed state
     pieces.forEach(p=>{
-      if(p.placed){ if(p.el.parentNode!==stage) stage.appendChild(p.el);
-        p.el.style.left=((p.cx-p.w/2)*scale)+'px'; p.el.style.top=((p.cy-p.h/2)*scale)+'px'; }
+      if(p.placed && p.slotRef){ if(p.el.parentNode!==stage) stage.appendChild(p.el);
+        p.el.style.left=((p.slotRef.cx-p.w/2)*scale)+'px'; p.el.style.top=((p.slotRef.cy-p.h/2)*scale)+'px'; }
       else { if(p.el.parentNode!==game) game.appendChild(p.el);
         p.el.style.left=p.homeX+'px'; p.el.style.top=p.homeY+'px'; }
     });
   }
 
   // ---------- drag ----------
+  // empty slots that this piece can fill (same shape+size+color)
+  const matchingSlots=p=>slots.filter(s=>!s.filled && sigMatch(p,s));
+  function nearestSlot(p,cx,cy,within){
+    let best=null,bd=Infinity;
+    matchingSlots(p).forEach(s=>{ const d=Math.hypot(cx-s.targetCX,cy-s.targetCY);
+      if(d<bd && (within==null || d<=within)){ bd=d; best=s; } });
+    return best;
+  }
+  function clearSlotFx(){ slots.forEach(s=>s.el.classList.remove('glow','ready')); }
+
   function attachDrag(p){
     const pel=p.el;
     pel.addEventListener('pointerdown', e=>{
       if(p.placed || transitioning || !started) return;
-      e.preventDefault();
+      e.preventDefault(); activity();
       try{ pel.setPointerCapture(e.pointerId); }catch(_){}
       const r=pel.getBoundingClientRect();
       drag={ p, offX:e.clientX-r.left, offY:e.clientY-r.top, id:e.pointerId };
       pel.classList.add('lifted'); pel.style.zIndex=50;
-      p.slot.classList.add('glow');
+      matchingSlots(p).forEach(s=>s.el.classList.add('glow')); // show EVERY valid spot
       pickBlip();
     });
     pel.addEventListener('pointermove', e=>{
@@ -417,18 +450,17 @@
       e.preventDefault();
       const x=e.clientX-drag.offX, y=e.clientY-drag.offY;
       pel.style.left=x+'px'; pel.style.top=y+'px';
-      const cx=x+p.W/2, cy=y+p.H/2;
-      const near=Math.hypot(cx-p.targetCX,cy-p.targetCY)<=p.snapR;
-      p.slot.classList.toggle('ready',near);
+      const near=nearestSlot(p, x+p.W/2, y+p.H/2, p.snapR);
+      slots.forEach(s=>s.el.classList.toggle('ready', s===near));
     });
     const up=e=>{
       if(!drag || drag.p!==p || e.pointerId!==drag.id) return;
-      pel.classList.remove('lifted'); p.slot.classList.remove('glow','ready');
+      pel.classList.remove('lifted'); clearSlotFx();
       try{ pel.releasePointerCapture(e.pointerId); }catch(_){}
       const cx=parseFloat(pel.style.left)+p.W/2, cy=parseFloat(pel.style.top)+p.H/2;
-      const dist=Math.hypot(cx-p.targetCX,cy-p.targetCY);
-      drag=null;
-      if(dist<=p.snapR) placePiece(p); else returnHome(p);
+      const slot=nearestSlot(p, cx, cy, p.snapR);
+      drag=null; activity();
+      if(slot) placePiece(p, slot); else returnHome(p);
     };
     pel.addEventListener('pointerup',up);
     pel.addEventListener('pointercancel',up);
@@ -442,23 +474,23 @@
     setTimeout(()=>{ pel.style.transition=''; },300);
   }
 
-  function placePiece(p){
-    if(p.placed) return; p.placed=true;
+  function placePiece(p, slot){
+    if(p.placed) return; p.placed=true; slot.filled=true; p.slotRef=slot;
     const pel=p.el;
     pel.style.transition=''; pel.style.zIndex=6;
     stage.appendChild(pel);
-    pel.style.left=((p.cx-p.w/2)*scale)+'px'; pel.style.top=((p.cy-p.h/2)*scale)+'px';
+    pel.style.left=((slot.cx-p.w/2)*scale)+'px'; pel.style.top=((slot.cy-p.h/2)*scale)+'px';
     pel.classList.add('placed'); pel.classList.remove('pop'); void pel.offsetWidth; pel.classList.add('pop');
-    p.slot.classList.add('filled');
+    slot.el.classList.add('filled');
     placedCount++;
     // dopamine
     placeChime(placedCount);
-    sparkle(p.targetCX,p.targetCY, p.color);
+    sparkle(slot.targetCX, slot.targetCY, p.color);
     stars+=1; el.stars.textContent=stars;
     const d=el.dots.children[placedCount-1]; if(d) d.classList.add('on');
     say(p.name);
     if(Math.random()<0.4) setTimeout(()=>showText(el.praise,pick(PRAISE)),240);
-    if(placedCount===pieces.length){ transitioning=true; setTimeout(completePuzzle,420); }
+    if(placedCount===pieces.length){ transitioning=true; clearHint(); setTimeout(completePuzzle,420); }
   }
 
   // ---------- effects ----------
@@ -489,6 +521,7 @@
   // ---------- completion / come to life ----------
   function completePuzzle(){
     const def=PUZZLES[idx];
+    clearHint(); clearEggs();
     // shared reward juice
     toys+=1; el.toys.textContent=toys; stars+=5; el.stars.textContent=stars;
     showText(el.banner,'You built the '+def.name+'! 🎉');
@@ -531,6 +564,87 @@
     setTimeout(nextPuzzle, 3000);
   }
 
+  // ---------- idle: hints (5s) + easter eggs (15s) ----------
+  function idleTick(){
+    if(!started || transitioning) return;
+    if(!el.startScreen.classList.contains('hidden')) return;   // paused on the home/start screen
+    const idle=now()-lastActivity;
+    const hb=Math.floor(idle/5000);   // 5s, 10s, 15s ...
+    if(hb>=1 && hb>hintBucket){ hintBucket=hb; showHint(); }
+    const eb=Math.floor(idle/15000);  // 15s, 30s ...
+    if(eb>=1 && eb>eggBucket){ eggBucket=eb; playEasterEgg(); }
+  }
+  function showHint(){
+    clearHint();
+    let p=(drag&&drag.p)?drag.p:null;
+    if(!p){ const rem=pieces.filter(x=>!x.placed); if(!rem.length) return; p=pick(rem); }
+    if(p.placed) return;
+    const dragging=(drag&&drag.p===p);
+    const px=dragging?(parseFloat(p.el.style.left)+p.W/2):(p.homeX+p.W/2);
+    const py=dragging?(parseFloat(p.el.style.top)+p.H/2):(p.homeY+p.H/2);
+    const s=nearestSlot(p,px,py,null); if(!s) return;   // the empty slot it belongs in
+    s.el.classList.add('hint');
+    if(!dragging) p.el.classList.add('wiggle');          // wiggle the tray piece to grab attention
+    const hand=document.createElement('div'); hand.className='hintHand'; hand.textContent='👇';
+    hand.style.left=(s.cx*scale)+'px'; hand.style.top=((s.cy-s.h/2)*scale-6)+'px';
+    stage.appendChild(hand);
+    hintChime();
+  }
+  function clearHint(){
+    document.querySelectorAll('.slot.hint').forEach(s=>s.classList.remove('hint'));
+    document.querySelectorAll('.piece.wiggle').forEach(e=>e.classList.remove('wiggle'));
+    document.querySelectorAll('.hintHand').forEach(e=>e.remove());
+  }
+  function hintChime(){ tone(880,0.12,'sine',0.11); tone(1174,0.12,'sine',0.09,0.1); }
+
+  // ---------- easter eggs (random cute animation to keep them engaged) ----------
+  function eggEl(emoji,size){ const d=document.createElement('div'); d.className='egg'; d.textContent=emoji; d.style.fontSize=size+'px'; game.appendChild(d); return d; }
+  function clearEggs(){ document.querySelectorAll('.egg').forEach(e=>e.remove()); }
+  function eggHop(){
+    const e=eggEl(pick(['🐰','🐱','🐶','🦆','🐧','🐸','🐥','🐢']),64); e.style.top=(H()*0.52)+'px'; e.style.left='0';
+    const N=6, fr=[]; for(let k=0;k<=N;k++){ const x=-80+(W()+160)*(k/N); fr.push({transform:`translate(${x}px,0)`}); if(k<N) fr.push({transform:`translate(${x+(W()+160)/N/2}px,-46px)`}); }
+    e.animate(fr,{duration:2600,easing:'ease-in-out'}).onfinish=()=>e.remove();
+    for(let k=0;k<N;k++) tone(520,0.08,'sine',0.12,k*0.43,760);
+  }
+  function eggStar(){
+    const e=eggEl('⭐',52); e.style.left='0'; e.style.top='0';
+    const x0=-60,y0=H()*0.15,x1=W()+60,y1=H()*0.42;
+    e.animate([{transform:`translate(${x0}px,${y0}px) rotate(0)`},{transform:`translate(${x1}px,${y1}px) rotate(400deg)`}],{duration:1400,easing:'ease-in'}).onfinish=()=>e.remove();
+    for(let k=0;k<10;k++) setTimeout(()=>sparkle(x0+(x1-x0)*k/10,y0+(y1-y0)*k/10,'#ffd166'),k*120);
+    tone(1200,0.5,'sine',0.12,0,2000);
+  }
+  function eggPeek(){
+    const fromL=Math.random()<0.5, y=H()*(0.3+Math.random()*0.3);
+    const e=eggEl(pick(['🐵','🙈','👀','🐼','🦊']),80); e.style.top=y+'px'; e.style.left='0';
+    const sx=fromL?-100:W()+100, mx=fromL?40:W()-130;
+    e.animate([{transform:`translate(${sx}px,0)`},{transform:`translate(${mx}px,0)`,offset:.3},{transform:`translate(${mx}px,-12px)`,offset:.5},{transform:`translate(${mx}px,0)`,offset:.7},{transform:`translate(${sx}px,0)`}],{duration:2200,easing:'ease-in-out'}).onfinish=()=>e.remove();
+    tone(300,0.14,'sine',0.14,0.3,520); tone(720,0.14,'triangle',0.12,0.5);
+  }
+  function eggBalloon(){
+    const e=eggEl(pick(['🎈','🎈','🪁']),70); e.style.left=rand(W()*0.2,W()*0.8)+'px'; e.style.top=H()+'px';
+    e.animate([{transform:'translateY(0) rotate(-4deg)'},{transform:`translateY(${-(H()+120)}px) rotate(4deg)`}],{duration:3200,easing:'ease-in'}).onfinish=()=>e.remove();
+    tone(660,0.2,'sine',0.1,0,990);
+  }
+  function eggFlutter(){
+    const e=eggEl('🦋',54); e.style.left='0'; e.style.top=(H()*0.4)+'px';
+    const N=8, fr=[]; for(let k=0;k<=N;k++){ fr.push({transform:`translate(${-60+(W()+120)*k/N}px,${Math.sin(k)*40}px)`}); }
+    e.animate(fr,{duration:3000,easing:'linear'}).onfinish=()=>e.remove();
+    tone(1000,0.1,'sine',0.06,0,1300);
+  }
+  function eggRainbow(){
+    const e=eggEl('🌈',90); e.style.left=(W()/2)+'px'; e.style.top=(H()*0.4)+'px';
+    e.animate([{transform:'translate(-50%,-50%) scale(0) rotate(0)',opacity:0},{transform:'translate(-50%,-50%) scale(1.2) rotate(18deg)',opacity:1,offset:.4},{transform:'translate(-50%,-50%) scale(1) rotate(-8deg)',opacity:1,offset:.7},{transform:'translate(-50%,-50%) scale(0)',opacity:0}],{duration:1800,easing:'ease-in-out'}).onfinish=()=>e.remove();
+    setTimeout(()=>confetti(W()/2,H()*0.4,24),700);
+    [523,659,784,1047].forEach((f,i)=>tone(f,0.15,'triangle',0.14,i*0.08));
+  }
+  function eggDrop(){
+    const e=eggEl(pick(['🐸','🐥','🐰','🐼','🐧','🐨']),70); const g=H()*0.6; e.style.left=rand(W()*0.3,W()*0.7)+'px'; e.style.top='-80px';
+    e.animate([{transform:'translateY(0)'},{transform:`translateY(${g+80}px)`,offset:.5,easing:'ease-in'},{transform:`translateY(${g+20}px)`,offset:.66},{transform:`translateY(${g+80}px)`,offset:.82},{transform:`translateY(${g+55}px)`,offset:.92},{transform:`translateY(${g+80}px)`,offset:1}],{duration:2200}).onfinish=()=>e.remove();
+    tone(400,0.12,'sine',0.14,0.5,700); tone(520,0.1,'triangle',0.1,0.72);
+  }
+  const EGGS=[eggHop,eggStar,eggPeek,eggBalloon,eggFlutter,eggRainbow,eggDrop];
+  function playEasterEgg(){ let i; do{ i=(Math.random()*EGGS.length)|0; }while(EGGS.length>1&&i===lastEgg); lastEgg=i; try{ EGGS[i](); }catch(e){} }
+
   // ---------- decoration ----------
   function makeSky(){ const items=['⭐','☁️','✨','🌈','☀️']; for(let i=0;i<6;i++){ const s=document.createElement('div');
     s.className='sky'; s.textContent=pick(items); s.style.left=rand(4,92)+'%'; s.style.top=rand(6,50)+'%';
@@ -538,7 +652,8 @@
 
   // ---------- controls ----------
   function start(){ ac(); if(AC&&AC.state==='suspended')AC.resume(); armSpeech(); started=true;
-    el.startScreen.classList.add('hidden'); buildPuzzle(idx); }
+    el.startScreen.classList.add('hidden'); buildPuzzle(idx);
+    if(!idleIvl) idleIvl=setInterval(idleTick,500); }
   document.getElementById('playBtn').addEventListener('click',start);
   document.getElementById('homeBtn').addEventListener('click',()=>{ el.startScreen.classList.remove('hidden'); });
   el.soundBtn.addEventListener('click',()=>{ muted=!muted; el.soundBtn.textContent=muted?'🔇':'🔊';
