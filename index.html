@@ -340,7 +340,9 @@
     slots = def.pieces.map((pc,k)=>{
       const slot=document.createElement('div'); slot.className='slot'; slot.dataset.idx=k;
       slot.innerHTML=svgFor(pc,false);
-      slot.style.zIndex=Math.max(1, Math.round(20000 - pc.w*pc.h)); // smaller slots draw on top
+      // Empty outlines live in a HIGH z-band so they always show THROUGH any placed
+      // piece covering them; smaller shapes sit on top so their outlines stay visible.
+      slot.style.zIndex=5000 + Math.round(Math.max(0, 30000 - pc.w*pc.h)/10);
       stage.appendChild(slot);
       return { ...pc, el:slot, idx:k, filled:false };
     });
@@ -477,7 +479,9 @@
   function placePiece(p, slot){
     if(p.placed) return; p.placed=true; slot.filled=true; p.slotRef=slot;
     const pel=p.el;
-    pel.style.transition=''; pel.style.zIndex=6;
+    // Placed pieces live in a LOW z-band (always below empty outlines); smaller pieces
+    // still sit on top of larger ones so the assembled toy looks right (e.g. window over base).
+    pel.style.transition=''; pel.style.zIndex=1000 + Math.round(Math.max(0, 30000 - p.w*p.h)/10);
     stage.appendChild(pel);
     pel.style.left=((slot.cx-p.w/2)*scale)+'px'; pel.style.top=((slot.cy-p.h/2)*scale)+'px';
     pel.classList.add('placed'); pel.classList.remove('pop'); void pel.offsetWidth; pel.classList.add('pop');
