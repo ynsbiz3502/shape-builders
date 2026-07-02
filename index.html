@@ -226,19 +226,21 @@
       P('triLeft','Sail','#ffd43b',102,152,82,150),
       P('triRight','Sail','#74c0fc',198,152,82,150),
     ]},
-    { name:'Caterpillar', box:[340,180], face:[68,92], pieces:[
-      P('circle','Head','#51cf66',68,94,78,78),
-      P('circle','Circle','#94d82d',136,96,66,66),
-      P('circle','Circle','#fcc419',197,96,66,66),
-      P('circle','Circle','#ff922b',256,96,64,64),
-      P('circle','Circle','#ff6b6b',311,96,56,56),
+    { name:'Caterpillar', box:[300,190], face:[74,112], pieces:[
+      P('triUp','Hat','#ff6b6b',74,44,64,58),
+      P('circle','Head','#51cf66',74,112,78,78),
+      P('circle','Circle','#94d82d',140,114,66,66),
+      P('circle','Circle','#fcc419',200,114,64,64),
+      P('circle','Circle','#ff922b',256,114,58,58),
     ]},
-    { name:'Flower', box:[300,300], face:[150,150], pieces:[
-      P('circle','Middle','#ffd43b',150,150,72,72),
-      P('circle','Petal','#ff8fc7',150,86,68,68),
-      P('circle','Petal','#ff8fc7',150,214,68,68),
-      P('circle','Petal','#ff8fc7',86,150,68,68),
-      P('circle','Petal','#ff8fc7',214,150,68,68),
+    { name:'Flower', box:[300,360], face:[150,120], pieces:[
+      P('circle','Middle','#ffd43b',150,120,74,74),
+      P('circle','Petal','#ff8fc7',150,58,66,66),
+      P('circle','Petal','#ff8fc7',150,182,66,66),
+      P('circle','Petal','#ff8fc7',86,120,66,66),
+      P('circle','Petal','#ff8fc7',214,120,66,66),
+      P('rect','Stem','#51cf66',150,282,18,150,8),
+      P('triRight','Leaf','#40c057',104,270,60,48),
     ]},
     { name:'Ice Cream', box:[240,330], face:[120,125], pieces:[
       P('triDown','Cone','#f0a850',120,252,116,150),
@@ -281,6 +283,7 @@
   // ---------- state ----------
   let stars=0, toys=0, idx=0, muted=false, transitioning=false, started=false;
   let pieces=[], slots=[], trayOrder=[], scale=1, placedCount=0, drag=null;
+  let order=[], orderPos=0;   // randomized sequence of puzzles
   let clipReady=false; // whether a Gemini/Veo clip is available for the current toy
   const slugFor=name=>name.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'');
   // idle → hint (5s) and easter-egg (15s) system
@@ -536,7 +539,14 @@
     if(clipReady) playShowVideo(def); else comeToLifeAnimation(def);
   }
 
-  function nextPuzzle(){ idx=(idx+1)%PUZZLES.length; buildPuzzle(idx); }
+  // build a fresh randomized run through all puzzles (never immediately repeating the last one)
+  function shuffleOrder(prev){
+    order=[...Array(PUZZLES.length).keys()];
+    for(let a=order.length-1;a>0;a--){ const b=(Math.random()*(a+1))|0; [order[a],order[b]]=[order[b],order[a]]; }
+    if(prev!=null && order[0]===prev && order.length>1){ [order[0],order[1]]=[order[1],order[0]]; }
+    orderPos=0;
+  }
+  function nextPuzzle(){ orderPos++; if(orderPos>=order.length) shuffleOrder(idx); idx=order[orderPos]; buildPuzzle(idx); }
 
   // Gemini/Veo clip of the finished toy coming to life
   function playShowVideo(def){
@@ -656,7 +666,8 @@
 
   // ---------- controls ----------
   function start(){ ac(); if(AC&&AC.state==='suspended')AC.resume(); armSpeech(); started=true;
-    el.startScreen.classList.add('hidden'); buildPuzzle(idx);
+    el.startScreen.classList.add('hidden');
+    shuffleOrder(null); idx=order[0]; buildPuzzle(idx);   // random first toy + random sequence
     if(!idleIvl) idleIvl=setInterval(idleTick,500); }
   document.getElementById('playBtn').addEventListener('click',start);
   document.getElementById('homeBtn').addEventListener('click',()=>{ el.startScreen.classList.remove('hidden'); });
